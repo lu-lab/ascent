@@ -75,6 +75,8 @@ class ObjectEmbeddingDataset3D(Dataset):
         lazy_loading: bool = False,
         frame_sample_method: str | None = None,
         frame_sample_size: int | None = None,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
         empty_image: bool = False,
     ):
         """
@@ -92,6 +94,8 @@ class ObjectEmbeddingDataset3D(Dataset):
             lazy_loading (bool): Flag to enable lazy loading of the image stack.
             frame_sample_method (str, optional): Method to sample frames from the dataset.
             frame_sample_size (int, optional): Number of frames to sample from the dataset.
+            start_frame (int, optional): If set, only include frames with index >= start_frame.
+            end_frame (int, optional): If set, only include frames with index <= end_frame.
             empty_image (bool): If True, returns an empty image tensor with the correct dimensions.
                 Useful for getting the image dimensions without loading actual data.
 
@@ -134,7 +138,9 @@ class ObjectEmbeddingDataset3D(Dataset):
                 list_keys = [int(k[1:]) for k in f if k.startswith("t")]
                 self.image_stack = [None] * (max(list_keys) + 1)
 
-        self.load_objects(coord_file, frame_sample_method, frame_sample_size)
+        self.load_objects(
+            coord_file, frame_sample_method, frame_sample_size, start_frame, end_frame
+        )
 
         # Load all images into memory if not using lazy loading
         if not lazy_loading:
@@ -175,7 +181,14 @@ class ObjectEmbeddingDataset3D(Dataset):
             return self._percentile_normalize(image, self.norm_p_low, self.norm_p_high)
         return image
 
-    def load_objects(self, coord_file, frame_sample_method, frame_sample_size):
+    def load_objects(
+        self,
+        coord_file,
+        frame_sample_method,
+        frame_sample_size,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+    ):
         # Assuming coordinates are stored in a CSV format: object_id, frame_index, z_coord, x_coord, y_coord
         self.objects_by_frame = defaultdict(list)
         self.frame_list = []
@@ -225,6 +238,26 @@ class ObjectEmbeddingDataset3D(Dataset):
             }
             self.max_objects = max([len(self.objects_by_frame[frame]) for frame in self.frame_list])
             logging.info(f"Sampled frames: {self.frame_list}")
+
+        # restrict to [start_frame, end_frame] if specified
+        if start_frame is not None or end_frame is not None:
+            ordered = sorted(self.frame_list)
+            if start_frame is not None:
+                ordered = [f for f in ordered if f >= start_frame]
+            if end_frame is not None:
+                ordered = [f for f in ordered if f <= end_frame]
+            self.frame_list = ordered
+            self.objects_by_frame = {
+                frame: self.objects_by_frame[frame] for frame in self.frame_list
+            }
+            self.max_objects = (
+                max([len(self.objects_by_frame[f]) for f in self.frame_list])
+                if self.frame_list
+                else 0
+            )
+            logging.info(
+                f"Frame range [{start_frame}, {end_frame}]: {len(self.frame_list)} frames"
+            )
 
     def get_image_at(self, t):
         # Method to fetch the image at time t

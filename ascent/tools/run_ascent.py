@@ -114,6 +114,8 @@ def main() -> None:
         norm_p_low=cfg["dataset_norm_p_low"],
         norm_p_high=cfg["dataset_norm_p_high"],
         lazy_loading=True,
+        start_frame=cfg.get("dataset_start_frame"),
+        end_frame=cfg.get("dataset_end_frame"),
     )
     logging.info(f"Dataset loaded with {len(dataset)} frames")
 

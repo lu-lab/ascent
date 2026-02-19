@@ -7,6 +7,8 @@ dataset_spacing = [1.26, 0.36, 0.36]  # physical spacing of the dataset in micro
 dataset_normalize = "percentile"  # Options: 'none', 'percentile'
 dataset_norm_p_low = 1.0  # Lower percentile for normalization
 dataset_norm_p_high = 99.99  # Upper percentile for normalization
+dataset_start_frame = None  # If set, run inference only for frames >= this index (inclusive)
+dataset_end_frame = None  # If set, run inference only for frames <= this index (inclusive)
 
 # ---------------- MODEL (NETr) -----------
 model_ckpt = "path-to-your-netr-model.pth"

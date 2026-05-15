@@ -93,12 +93,29 @@ def setup_logger(level: str, out_dir: Path, out_prefix: str) -> None:
     )
 
 
-def main() -> None:
-    cfg = parse_cli()
+def run(cfg: dict, *, configure_logging: bool = True, progress_callback=None) -> Path:
+    """Run inference + tracking from a config dict and return the tracks CSV path.
+
+    This is the programmatic entry point used by both the CLI (``main``) and
+    the napari plugin's inference dock widget. It performs no argument parsing
+    — pass a fully resolved config dict.
+
+    Setting ``configure_logging=False`` is useful when called from a host
+    process (like napari) that owns its own logging setup.
+    """
     out_dir = Path(cfg["runtime_output_dir"]).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    setup_logger(cfg.get("loglevel", "INFO"), out_dir, cfg.get("runtime_output_prefix"))
+    if configure_logging:
+        # NOTE: logging.basicConfig is a no-op once the root logger has any
+        # handler, so a second call from the same process (e.g. a long-running
+        # napari session) won't reattach handlers. The plugin therefore passes
+        # configure_logging=False and lets napari own logging.
+        setup_logger(
+            cfg.get("runtime_loglevel", cfg.get("loglevel", "INFO")),
+            out_dir,
+            cfg.get("runtime_output_prefix"),
+        )
     logging.info("ASCENT tracking started")
     logging.info(f"Full config:\n{cfg}")
 
@@ -158,6 +175,8 @@ def main() -> None:
 
     # ---------------- Feature extraction ----------------
     pred_z, pred_oid = [], []
+    if progress_callback:
+        progress_callback("extract_start", 0, len(dataloader))
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             logging.info(f"Processing batch {i + 1}/{len(dataloader)}")
@@ -169,13 +188,19 @@ def main() -> None:
             z = z[valid]
             pred_z.append(z.cpu())
             pred_oid.extend(v[valid].tolist())
+            if progress_callback:
+                progress_callback("extract_step", i + 1, len(dataloader))
 
     pred_z = torch.cat(pred_z, dim=0)
     torch.save(pred_z, out_dir / f"{cfg['runtime_output_prefix']}_pred_z.pt")
     torch.save(pred_oid, out_dir / f"{cfg['runtime_output_prefix']}_pred_object_ids.pt")
     logging.info("Feature extraction completed")
+    if progress_callback:
+        progress_callback("extract_done", 0, 0)
 
     # ---------------- Tracking ----------------
+    if progress_callback:
+        progress_callback("tracking_start", 0, 0)
     tracker = HungarianTracker(
         file_objects=cfg["dataset_file_coord"],
         file_z=out_dir / f"{cfg['runtime_output_prefix']}_pred_z.pt",
@@ -190,10 +215,17 @@ def main() -> None:
         max_gap_frames=cfg["tracking_max_gap_frames"],
     )
     logging.info("Tracking completed")
+    if progress_callback:
+        progress_callback("tracking_done", 0, 0)
     track_csv = out_dir / f"{cfg['runtime_output_prefix']}_tracks.csv"
     tracker.save_tracks_napari(track_csv)
     logging.info("Tracking saved to %s", track_csv)
     logging.info("ASCENT tracking finished")
+    return track_csv
+
+
+def main() -> None:
+    run(parse_cli())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,49 @@
+name: ascent
+display_name: ASCENT
+visibility: public
+schema_version: 0.2.1
+# napari-hub category enum doesn't include "Tracking"; "Annotation" covers
+# the manual-correction widget and "Measurement" covers the per-track
+# activity-trace extraction.
+categories: ["Annotation", "Measurement"]
+# TODO(M5): re-add `icon:` once docs/_static/ascent_logo.png is committed.
+
+contributions:
+  commands:
+    - id: ascent.read
+      python_name: ascent.napari_plugin._reader:get_reader
+      title: Open ASCENT HDF5 / detections CSV / tracks CSV
+
+    - id: ascent.control
+      python_name: ascent.napari_plugin._widgets._control:make_control_widget
+      title: ASCENT — Control panel
+
+    - id: ascent.inference
+      python_name: ascent.napari_plugin._widgets._inference:make_inference_widget
+      title: ASCENT — Inference
+
+    - id: ascent.correct
+      python_name: ascent.napari_plugin._widgets._correction:make_correction_widget
+      title: ASCENT — Correct tracks
+
+    - id: ascent.traces
+      python_name: ascent.napari_plugin._widgets._traces:make_traces_widget
+      title: ASCENT — Activity traces
+
+  readers:
+    - command: ascent.read
+      filename_patterns:
+        - "*.h5"
+        - "*.hdf5"
+        - "*.csv"
+      accepts_directories: false
+
+  widgets:
+    - command: ascent.control
+      display_name: ASCENT control panel
+    - command: ascent.inference
+      display_name: ASCENT inference
+    - command: ascent.correct
+      display_name: ASCENT correct tracks
+    - command: ascent.traces
+      display_name: ASCENT activity traces

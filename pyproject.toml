@@ -5,20 +5,62 @@ description = "Annotation-free Self-supervised Contrastive Embeddings for 3D Neu
 authors = ["Haejun Han"]
 license = "MIT"
 readme = "README.md"
+include = [
+    { path = "ascent/napari_plugin/napari.yaml", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.scripts]
 ascent = "ascent.cli:main"
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.13"
-torch = "^2.5"
-torchvision = "^0.20"
-timm = "^1.0"
-numpy = "^1.26"
-scipy = "^1.14"
-pandas = "^2.2"
-h5py = "^3.12"
+python = ">=3.10,<3.14"
+# Loose lower bounds; no upper pins on torch/torchvision so pip can pick the
+# wheel set that matches the user's Python + platform (e.g. torch 2.11 +
+# torchvision 0.26 on cp313 macOS arm64). Tighten only if we hit an
+# incompatibility.
+torch = ">=2.5"
+torchvision = ">=0.20"
+timm = ">=1.0"
+numpy = ">=1.26"        # allow 2.x — gives prebuilt cp313 wheels
+scipy = ">=1.14"
+pandas = ">=2.2"
+h5py = ">=3.12"
 tensorboard = ">=2.18"
+
+# Optional GUI deps (installed via `pip install ascent[gui]`).
+# We pick PySide6 explicitly rather than `napari[all]` to keep the install
+# footprint small and avoid Qt-binding conflicts with users who already have
+# PyQt5 / PySide2 installed.
+#
+# Lower bounds are recent enough to keep pip's resolver from exploring the
+# entire napari version space (napari pulls ~40 transitive packages and
+# loose pins trigger `resolution-too-deep`). napari-aicsimageio was dropped
+# from this extras set in 2026 because it's upstream-deprecated and was the
+# main resolver bottleneck; users who need OME-TIFF support can layer
+# `bioio-napari` on top.
+napari = {version = ">=0.5.5", optional = true}
+PySide6 = {version = ">=6.6", optional = true}
+magicgui = {version = ">=0.10", optional = true}
+qtpy = {version = ">=2.4", optional = true}
+pyqtgraph = {version = ">=0.13", optional = true}
+"napari-ome-zarr" = {version = ">=0.6", optional = true}
+
+[tool.poetry.extras]
+gui = [
+    "napari",
+    "PySide6",
+    "magicgui",
+    "qtpy",
+    "pyqtgraph",
+    "napari-ome-zarr",
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8"
+pytest-qt = {version = ">=4", optional = false}
+
+[tool.poetry.plugins."napari.manifest"]
+ascent = "ascent.napari_plugin:napari.yaml"
 
 [build-system]
 requires = ["poetry-core>=1.9.0"]

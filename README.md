@@ -9,13 +9,8 @@
 - [ASCENT](#ascent)
   - [📦 Installation](#-installation)
     - [Quick Install (from Source)](#quick-install-from-source)
-  - [🔬 Optional: Generate Neuron Candidates with StarDist 3-D](#-optional-generate-neuron-candidates-with-stardist-3-d)
-    - [Why a Separate Environment?](#why-a-separate-environment)
-    - [1. Install StarDist](#1-install-stardist)
-    - [2. Download a Pre-trained Model](#2-download-a-pre-trained-model)
-    - [3. Run the Segmentation Script](#3-run-the-segmentation-script)
-      - [Key CLI Flags](#key-cli-flags)
-      - [Expected HDF5 Layout](#expected-hdf5-layout)
+  - [Docker (one image, no env juggling)](#docker-one-image-no-env-juggling)
+  - [Detection (bring your own)](#detection-bring-your-own)
   - [🚀 Tracking Your Own Video with a Pre-trained NETr Model](#-tracking-your-own-video-with-a-pre-trained-netr-model)
     - [How ASCENT Runs Inference](#how-ascent-runs-inference)
     - [Available Pre-trained NETr Checkpoints](#available-pre-trained-netr-checkpoints)
@@ -36,7 +31,7 @@
 
 ## 📦 Installation (ASCENT core)
 
-ASCENT runs on Python **3.10–3.12** (Linux/macOS/Windows). It’s a standard PyTorch project; install either the CPU build or CUDA build depending on your machine.
+ASCENT runs on Python **3.10–3.13** (Linux/macOS/Windows). It’s a standard PyTorch project; install either the CPU build or CUDA build depending on your machine.
 
 ---
 
@@ -58,93 +53,107 @@ pip install -e .
 python -c "import ascent, torch; print('ASCENT', ascent.__version__, '| CUDA available:', torch.cuda.is_available())"
 ```
 
+## Docker (one image, no env juggling)
+
+A single Docker image ships the ASCENT inference / training pipeline. It is
+PyTorch-only — detection (segmentation) is intentionally separated, since
+the previous bundled-StarDist setup forced users into a TensorFlow + PyTorch
+CUDA dance that was the source of most install pain. Run any segmentation
+plugin you like (we recommend [`stardist-napari`](https://napari-hub.org/plugins/stardist-napari)
+or [`cellpose-napari`](https://napari-hub.org/plugins/cellpose-napari)),
+export a detections CSV, and feed it to ASCENT.
+
+### Build
+
+CPU image (multi-arch — works on linux/amd64 and linux/arm64, including
+Docker Desktop on Apple Silicon):
+
+```bash
+docker build -t ascent:latest .
+```
+
+CUDA image (Linux + NVIDIA Container Toolkit on the host):
+
+```bash
+docker build     --build-arg BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime     -t ascent:cuda .
+```
+
+### Run
+
+Mount your data and configs at `/workspace` (the image's default WORKDIR):
+
+```bash
+# ASCENT inference
+docker run --rm -v "$PWD:/workspace" ascent:latest ascent run \
+    --config /workspace/track.py
+
+# Download the three pretrained NETr checkpoints
+docker run --rm -v "$PWD/checkpoints:/checkpoints" ascent:latest \
+    fetch-models /checkpoints
+
+# Interactive shell (nothing auto-activated; use `micromamba run -n ascent ...`)
+docker run --rm -it -v "$PWD:/workspace" ascent:latest bash
+```
+
+GPU run:
+
+```bash
+docker run --gpus all --rm -v "$PWD:/workspace" ascent:cuda     ascent run --config /workspace/track.py
+```
+
+### What's inside
+
+| Path | Contents |
+|---|---|
+| `/opt/ascent` | The source tree (editable install) |
+| `/opt/conda/envs/ascent` | Python 3.12 + ASCENT + PyTorch |
+| `/usr/local/bin/entrypoint` | Dispatcher — see `scripts/docker-entrypoint.sh` |
+
+The image does **not** include the napari GUI plugin; for interactive use,
+install ASCENT locally with `pip install ascent[gui]` (see the napari
+plugin section below). It also does **not** include any segmentation /
+detection model — see *Detection (bring your own)* below.
+
+
 ---
 
-## 🔬 Optional: Generate Neuron Candidates with **StarDist 3-D**
-
-If you already have detections (centroids) from a separate pipeline, you can skip this part.
-
-### Why a Separate Environment?
-StarDist relies on TensorFlow 2.x, which often conflicts with the CUDA/PyTorch stack used by ASCENT. Keeping them in separate conda/pip environments prevents these issues.
-
 ---
 
-### 1. Install StarDist
+## Detection (bring your own)
 
-Follow the official guide → [https://github.com/stardist/stardist](https://github.com/stardist/stardist)
-*(create a fresh environment first!)*
+ASCENT consumes a CSV of per-frame neuron centroids — it does **not** ship
+its own segmenter. Pick whichever 3-D detector best fits your data and
+have it emit a CSV with this header:
 
----
+```
+object_id,t,z,y,x
+```
 
-### 2. Download a Pre-trained Model
+Recommended napari segmentation plugins (each lives in its own
+environment, so there is no PyTorch / TensorFlow conflict to manage):
 
-| Model ID                  | Download                                                                                                                              | Training volumes | Voxel size (µm)       | Target tissue      |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | --------------------- | ------------------ |
-| `celegans-free-NeRVE`     | [link](https://www.dropbox.com/scl/fo/dxcikcgwgi96yw5lefokq/AH8gG4qmRP86jTjiy4t-6GA?rlkey=8673p9td73sb1cnvmdu4phxlr&st=wfoj46mu&dl=0) | 2 (NeRVE)        | 0.3226 × 0.3226 × 1.5 | *C. elegans* brain |
-| `celegans-device-Opterra` | [link](https://www.dropbox.com/scl/fo/djsxhdxfco9xhijdxpk6w/ALbtald5Lnh2p1dOibEs4Q4?rlkey=t07vmppwwm04gtg9eww0wvgdl&st=qljcb71i&dl=0) | 2 (in-house)     | 0.243 × 0.243 × 1.5   | *C. elegans* brain |
+- [`stardist-napari`](https://napari-hub.org/plugins/stardist-napari) — the
+  detector ASCENT was originally evaluated against. Pretrained models for
+  *C. elegans* brain are available:
+  [`celegans-free-NeRVE`](https://www.dropbox.com/scl/fo/dxcikcgwgi96yw5lefokq/AH8gG4qmRP86jTjiy4t-6GA?rlkey=8673p9td73sb1cnvmdu4phxlr&st=wfoj46mu&dl=0)
+  (NeRVE imaging conditions, voxel 0.3226 × 0.3226 × 1.5 µm),
+  [`celegans-device-Opterra`](https://www.dropbox.com/scl/fo/djsxhdxfco9xhijdxpk6w/ALbtald5Lnh2p1dOibEs4Q4?rlkey=t07vmppwwm04gtg9eww0wvgdl&st=qljcb71i&dl=0)
+  (Opterra, voxel 0.243 × 0.243 × 1.5 µm).
+- [`cellpose-napari`](https://napari-hub.org/plugins/cellpose-napari) — a
+  PyTorch-native alternative; useful if you prefer to stay in one ML stack.
+- Any other tool that emits per-frame instance masks. Convert masks →
+  centroids with a few lines of `scipy.ndimage.center_of_mass` or
+  `skimage.measure.regionprops` and dump as CSV.
 
-Dataset details are in the bioRxiv preprint (see “Datasets and ground truth”):
+If you used the previous `examples/scripts/stardist_segment.py` script,
+its functionality is now provided by `stardist-napari`'s headless API
+(`stardist-napari.run --input ... --modelpath ...`), or you can keep
+running it from a prior commit of this repo against your existing
+StarDist install.
+
+Dataset details for the *C. elegans* StarDist models are in the bioRxiv
+preprint, "Datasets and ground truth":
 [https://www.biorxiv.org/content/10.1101/2025.07.23.666425v1.full](https://www.biorxiv.org/content/10.1101/2025.07.23.666425v1.full)
-
----
-
-### 3. Run the Segmentation Script
-
-`examples/scripts/stardist_segment.py` converts a 4-D HDF5 movie into:
-
-* **Per-frame instance masks** (`--output_mask`)
-* A **centroid table** (`--output_centroids`) that ASCENT can use
-
-```bash
-# Activate your StarDist environment
-conda activate stardist
-
-python examples/scripts/stardist_segment.py \
-    --input            path/to/input.h5 \
-    --input_channel    0 \
-    --input_axis_order ZYX \
-    --modelpath        path/to/model \
-    --normalize        1 99.99 \
-    --output_mask      path/to/output_mask.h5 \
-    --output_centroids path/to/output_centroids.csv
-```
-
-#### Key CLI Flags
-
-| Flag                      | Description                                                  | Default   |
-| ------------------------- | ------------------------------------------------------------ | --------- |
-| `--input`                 | Path to the HDF5 movie                                       | —         |
-| `--input_channel`         | Channel index to segment                                     | `0`       |
-| `--input_axis_order`      | Axis order of each 3-D stack (`Z`, `Y`, `X` in any order)    | `ZYX`     |
-| `--modelpath`             | Folder containing StarDist 3-D `config.json` + weights `.h5` | —         |
-| `--normalize P_MIN P_MAX` | Percentile range for intensity normalization                 | `1 99.99` |
-| `--output_mask`           | HDF5 file to store label volumes (one dataset per frame)     | —         |
-| `--output_centroids`      | CSV with `object_id,t,z,y,x` columns                         | —         |
-
-Run:
-
-```bash
-python stardist_segment.py --help
-```
-
-for the full list of options.
-
-#### Expected HDF5 Layout
-
-```
-root
-└── t{frame}            # HDF5 group
-    └── c{channel}      # 3-D dataset (Z × Y × X)
-```
-
-Example: `t250/c0` holds the Z-stack for frame 250, channel 0.
-
-**After segmentation you’ll have:**
-
-* `output_mask.h5` – datasets named `"0"`, `"1"`, … each containing a label volume (`uint32`)
-* `output_centroids.csv` – centroid coordinates and bounding-box radii for each detected neuron
-
-You can now feed these outputs, along with the raw movie, into ASCENT’s tracking pipeline.
 
 ---
 
@@ -332,6 +341,59 @@ See the [example](./examples/configs/train_NETr_template.py) for an example conf
 * Start with `batch_size=4`; increase if memory allows. If you see too few objects per frame, reduce crop sizes or jitter ranges.
 * You can list **multiple training datasets** (as a list) to mix sources; batches are interleaved across loaders each epoch.
 * For custom learning‑rate schedules or per‑layer LRs, add a `scheduler` or `optimizer.layer_lrs` to the config.
+
+---
+---
+
+## napari plugin (GUI)
+
+ASCENT ships with a [napari](https://napari.org) plugin that wraps the same
+inference pipeline in a graphical interface and adds manual track correction
+plus an activity-trace viewer. It also reads the ASCENT HDF5 / detections /
+tracks formats directly via drag-and-drop.
+
+### Install
+
+```bash
+pip install ascent[gui]    # from PyPI: adds napari, PySide6, magicgui, pyqtgraph
+# or: pip install -e .[gui]   # editable install from a local clone
+napari                       # launch napari; the ASCENT plugin appears under Plugins
+```
+
+### What is in the plugin
+
+| Panel | Purpose |
+|---|---|
+| Readers | Drop an HDF5 movie (`t{frame}/c{channel}`), detections CSV (`object_id,t,z,y,x`), or tracks CSV (`TrackID,ObjectID,t,z,y,x`) — they load as Image / Points / Tracks layers respectively. HDF5 movies are **lazy-loaded** via Dask, so multi-gigabyte datasets open instantly. Multi-channel datasets are automatically split into separate layers. |
+| ASCENT inference | Pick an Image layer + a Points layer (your detections), point at a NETr `.pth` checkpoint, click Run inference. The pipeline runs in a background thread and adds a Tracks layer when done. **Multi-phase progress bars** keep you updated on extraction and tracking batches. |
+| ASCENT correct tracks | Split / merge / relabel / delete tracks; remove individual points; undo / redo. Edits flush back to the Tracks layer immediately. |
+| ASCENT activity traces | Pick an Image + a Tracks layer, set an ROI radius and reduction (mean/max/sum), click Compute traces. Plots one intensity-vs-frame line per track in a pyqtgraph canvas. |
+
+### Detection is intentionally separate
+
+The plugin does not ship a detector. Use any napari segmentation plugin to produce
+a Points layer of centroids (or load your own CSV), then feed it to ASCENT.
+Common picks:
+
+- [stardist-napari](https://napari-hub.org/plugins/stardist-napari) — the detector
+  ASCENT was originally evaluated against.
+- [cellpose-napari](https://napari-hub.org/plugins/cellpose-napari) — a
+  PyTorch-native alternative.
+
+This decoupling means StarDist's TF dependency does not need to coexist with
+ASCENT's PyTorch stack; the two plugins live in independent environments and
+you get the best of each via napari layer interop.
+
+### Tips
+
+- The plugin requires a 4-D `(T, Z, Y, X)` Image layer. If your data is
+  multi-channel, ASCENT's reader automatically splits them into single-channel layers (e.g., `[filename] ch0`); just pick the one you want to track.
+- The "Volume axis order" picker must match how each frame is stored in the
+  HDF5 — picking the wrong order produces wrong tracks silently.
+- Use the **Apply spacing to viewer** button in the inference panel to explicitly synchronize the physical voxel spacing (Z, Y, X) to all 4D layers in the viewer.
+- When running inference, if you use an Image layer that was loaded directly from an `.h5` file, the plugin bypasses the expensive file-dumping phase and points PyTorch directly to your original file, saving significant disk space and startup time.
+- `pip install ascent` (without `[gui]`) installs only the CLI/training pieces,
+  with no Qt or napari pulled in.
 
 ---
 

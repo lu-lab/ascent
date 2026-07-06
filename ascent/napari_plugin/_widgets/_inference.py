@@ -60,6 +60,7 @@ def make_inference_widget():
             "mode": "r",
             "filter": "*.pth *.pt",
         },
+        model_patch_size_z = {"label": "Z patch size used to train model","min":1},
         device={"choices": DEVICES},
         normalize={"choices": NORMALIZE, "label": "Image normalization"},
         norm_p_low={"label": "Percentile low", "min": 0.0, "max": 100.0, "step": 0.1},
@@ -90,6 +91,7 @@ def make_inference_widget():
         image_layer: "napari.layers.Image",
         points_layer: "napari.layers.Points",
         model_ckpt: Path = Path(""),
+        model_patch_size_z: int = 3,
         device: str = "auto",
         normalize: str = "percentile",
         norm_p_low: float = 1.0,
@@ -115,7 +117,7 @@ def make_inference_widget():
             return
 
         image = image_layer.data
-        if image.ndim != 4:
+        if image.ndim > 4 or image.ndim < 3:
             show_error(
                 f"Image layer must be 4-D (T, Z, Y, X); got {image.shape}. "
                 "Multi-channel layers should be split into single-channel layers."
@@ -136,6 +138,7 @@ def make_inference_widget():
             object_ids = feats["object_id"].to_numpy()
 
         overrides = {
+            "model_lf_patch_size_z": model_patch_size_z,
             "dataset_normalize": normalize,
             "dataset_norm_p_low": norm_p_low,
             "dataset_norm_p_high": norm_p_high,
@@ -231,15 +234,24 @@ def make_inference_widget():
             widget.call_button.enabled = True
 
         def _on_done(result):
+            from ascent.napari_plugin._manager import get_or_create_manager
             track_data, oids = result
-            viewer.add_tracks(
-                track_data,
-                name="ASCENT tracks",
-                properties={"object_id": oids},
-                tail_length=30,
-                scale=image_layer.scale,
-            )
-            show_info(f"ASCENT inference done — {len(track_data)} track points.")
+            
+            # add track_id to features. data frame is copied then reassigned to trigger internal napari updates
+            features  = points_layer.features.copy()
+            features["track_id"] = track_data[:,0].astype(int)
+            points_layer.features = features
+            # points_layer.features["track_id"] = track_data[:,0].astype(int)
+            # points_layer.properties["track_id"] = track_data[:,0].astype(int)
+
+            manager = get_or_create_manager()
+            manager._ensure_tracks(points_layer)
+            manager._apply_styling(points_layer)
+
+            # need to rescale face_contrast since napari doesn't automatically
+            points_layer.face_contrast_limits = (track_data[:,0].min(),track_data[:,0].max())
+            points_layer.refresh_colors()
+            points_layer.refresh_text()
 
         def _on_error(err):
             show_error(f"ASCENT inference failed: {err!r}")

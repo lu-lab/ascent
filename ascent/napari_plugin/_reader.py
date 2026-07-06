@@ -25,7 +25,10 @@ import numpy as np
 
 LayerData = tuple[object, dict, str]
 ReaderFunction = Callable[[str | Sequence[str]], list[LayerData]]
+import dask.array as da
+import dask
 
+import re
 
 def get_reader(path: str | Sequence[str]) -> Optional[ReaderFunction]:
     """Return a reader callable if ``path`` is one ASCENT can open, else None.
@@ -49,7 +52,7 @@ def _can_read(path: str) -> bool:
     if suffix in (".h5", ".hdf5"):
         return _is_ascent_h5(p)
     if suffix == ".csv":
-        return _classify_csv(p) is not None
+        return _classify_csv(p)
     return False
 
 
@@ -64,13 +67,9 @@ def _read_single(path: str) -> list[LayerData]:
     p = Path(path)
     suffix = p.suffix.lower()
     if suffix in (".h5", ".hdf5"):
-        return [_read_ascent_h5(p)]
+        return _read_ascent_h5(p)
     if suffix == ".csv":
-        kind = _classify_csv(p)
-        if kind == "detections":
-            return [_read_detections_csv(p)]
-        if kind == "tracks":
-            return [_read_tracks_csv(p)]
+        return _read_tracks_csv(p)
     raise ValueError(f"ASCENT reader cannot handle {path!r}")
 
 
@@ -110,66 +109,130 @@ def _channel_keys(group: h5py.Group) -> list[str]:
     )
 
 
-def _read_ascent_h5(path: Path) -> LayerData:
-    """Lazily stack the ``t*/c*`` datasets into a (T, [C,] Z, Y, X) dask array.
+# --- 1. Duck-Typed Class for hdf5 ---
+class UnifiedHDF5Proxy:
     """
-    import dask.array as da
-    
-    f = h5py.File(path, "r")
-    frame_keys = _frame_keys(f)
-    if not frame_keys:
-        raise ValueError(f"No frame groups (t*) found in {path}")
-    ch_keys = _channel_keys(f[frame_keys[0]])
-    if not ch_keys:
-        raise ValueError(f"No channel datasets (c*) in {frame_keys[0]} of {path}")
-
-    if len(ch_keys) == 1:
-        stack = da.stack([da.from_array(f[fk][ch_keys[0]]) for fk in frame_keys], axis=0)
-        meta = {"name": path.stem, "metadata": {"source": str(path)}}
-    else:
-        shapes = {f[frame_keys[0]][ck].shape for ck in ch_keys}
-        if len(shapes) > 1:
-            raise ValueError(
-                f"{path}: channel datasets in {frame_keys[0]} have mismatched "
-                f"shapes {shapes}. ASCENT's reader requires all channels to "
-                "share a common ZYX shape; load mismatched volumes as separate "
-                "files instead."
-            )
-        stack = da.stack(
-            [
-                da.stack([da.from_array(f[fk][ck]) for ck in ch_keys], axis=0)
-                for fk in frame_keys
-            ],
-            axis=0,
+    An ND-agnostic virtual layout mapping a global coordinate system (T, C, ...spatial)
+    directly to HDF5 paths while strictly adhering to NumPy slicing rules.
+    """
+    def __init__(self, filepath):
+        self._file = h5py.File(filepath, 'r', rdcc_nbytes=536870912)
+        
+        # 1. Gather timepoint keys
+        self.t_keys = sorted(
+            [k for k in self._file.keys() if k.startswith('t') and k[1:].isdigit()],
+            key=lambda k: int(k[1:])
         )
-        meta = {
-            "name": [f"{path.stem} ch{ck[1:]}" for ck in ch_keys],
-            "channel_axis": 1,
-            "metadata": {"source": str(path), "channels": ch_keys},
-        }
+        if not self.t_keys:
+            raise ValueError("No timepoint groups found in the HDF5 file.")
+            
+        # 2. Gather channel keys from the first frame
+        first_t = self.t_keys[0]
+        self.c_keys = sorted(
+            [k for k in self._file[first_t].keys() if k.startswith('c') and k[1:].isdigit()],
+            key=lambda k: int(k[1:])
+        )
+        if not self.c_keys:
+            raise ValueError("No channel datasets found in the HDF5 file.")
+            
+        # 3. Read metadata template from one dataset
+        template_ds = self._file[first_t][self.c_keys[0]]
+        self.spatial_shape = template_ds.shape  # Can be (Y, X) or (Z, Y, X)
+        self.dtype = template_ds.dtype
+        self.chunks = template_ds.chunks or self.spatial_shape 
+        
+        # 4. Define dynamic global shape: (T, C, ...)
+        self.shape = (len(self.t_keys), len(self.c_keys)) + self.spatial_shape
+        self.ndim = len(self.shape)
 
-    return (stack, meta, "image")
+    def __getitem__(self, key):
+        # Standardize key into a full self.ndim-tuple layout
+        if not isinstance(key, tuple):
+            key = (key,)
+        key = key + (slice(None),) * (self.ndim - len(key))
+        
+        t_dim, c_dim = key[0], key[1]
+        spatial_slices = key[2:]  # Dynamically matches the spatial dims (2D or 3D)
+        
+        # Track whether the index type dictates dropping or keeping dimensions
+        squeeze_t = isinstance(t_dim, int)
+        squeeze_c = isinstance(c_dim, int)
+        
+        # Convert slices or integers into explicit lists of global coordinates
+        t_indices = [t_dim] if squeeze_t else list(range(*t_dim.indices(self.shape[0])))
+        c_indices = [c_dim] if squeeze_c else list(range(*c_dim.indices(self.shape[1])))
+        
+        # Build out the target array blocks sequentially
+        t_blocks = []
+        for t in t_indices:
+            c_blocks = []
+            for c in c_indices:
+                data = self._file[self.t_keys[t]][self.c_keys[c]][spatial_slices]
+                c_blocks.append(data)
+            # Stack elements along the channel axis (axis 0 of this sub-block)
+            t_blocks.append(np.stack(c_blocks, axis=0))
+            
+        # Stack elements along the time axis
+        res = np.stack(t_blocks, axis=0)
+        
+        # Squeeze dimensions ONLY if they were requested as flat integers 
+        if squeeze_c:
+            res = np.squeeze(res, axis=1)
+        if squeeze_t:
+            res = np.squeeze(res, axis=0)
+            
+        return res
+
+
+class LazyHDF5Volume:
+    def __init__(self, filepath):
+        proxy = UnifiedHDF5Proxy(filepath)
+        
+        # Chunking rules adapt automatically to 4D or 5D layouts
+        dask_chunks = (1, 1) + proxy.chunks
+        
+        self.dask_array = da.from_array(
+            proxy, 
+            chunks=dask_chunks, 
+        )
+        
+    @property
+    def shape(self): return self.dask_array.shape
+    @property
+    def dtype(self): return self.dask_array.dtype
+    @property
+    def ndim(self): return self.dask_array.ndim
+    def __getitem__(self, key): return self.dask_array[key]
+    
+# --- 2. The Worker Function --- #
+def _read_ascent_h5(path):
+    """
+    Reads the filepath and returns a list of napari LayerData tuples.
+    """
+    print(f"Loading {path} via Custom Dask Reader...")
+    
+    # Instantiate your lazy volume
+    lazy_volume = LazyHDF5Volume(path)
+    
+    # Define how napari should display this layer
+    add_kwargs = {
+        "name": "HDF5 Volume",
+        "multiscale": False,
+        "channel_axis": 1 if lazy_volume.ndim == 5 else None, 
+        "cache": True
+    }
+    
+    # Return exactly one LayerData tuple inside a list
+    # Format: (data, meta_dict, layer_type)
+    print(lazy_volume.shape)
+    return [(lazy_volume, add_kwargs, 'image')]
 
 
 # --------------------------------------------------------------------------- #
 # CSVs
 # --------------------------------------------------------------------------- #
 
-
-def _loadtxt_skip_header(path: Path, *, expected_cols: int) -> np.ndarray:
-    """Like ``np.loadtxt(skiprows=1)`` but returns an empty (0, expected_cols)
-    array for header-only files instead of warning. Strips a UTF-8 BOM if present."""
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        next(f, None)  # drop header
-        body = f.read()
-    if not body.strip():
-        return np.zeros((0, expected_cols), dtype=np.float64)
-    return np.loadtxt(body.splitlines(), delimiter=",", dtype=np.float64, ndmin=2)
-
-
-_DETECTION_HEADER = ("object_id", "t", "z", "y", "x")
-_TRACKS_HEADER = ("trackid", "objectid", "t", "z", "y", "x")
-
+_MINIMUM_HEADER = {"t", "y", "x"}
 
 def _classify_csv(path: Path) -> Optional[str]:
     """Return ``"detections"``, ``"tracks"``, or ``None`` based on header.
@@ -182,56 +245,93 @@ def _classify_csv(path: Path) -> Optional[str]:
         # ``utf-8-sig`` strips a BOM if present; otherwise behaves like utf-8.
         with open(path, newline="", encoding="utf-8-sig") as f:
             header = next(csv.reader(f), None)
+            print(f"header: {header}")
     except (OSError, StopIteration, UnicodeDecodeError):
-        return None
+        return False
     if not header:
-        return None
-    cols = tuple(c.strip().lower() for c in header)
-    if cols[: len(_DETECTION_HEADER)] == _DETECTION_HEADER:
-        return "detections"
-    if cols[: len(_TRACKS_HEADER)] == _TRACKS_HEADER:
-        return "tracks"
-    return None
+        return False
+    cols = {c.strip().lower() for c in header}
+    if _MINIMUM_HEADER.issubset(cols):
+        return True
+    return False
 
-
-def _read_detections_csv(path: Path) -> LayerData:
-    rows = _loadtxt_skip_header(path, expected_cols=5)
-    if rows.shape[0] == 0:
-        coords = np.zeros((0, 4), dtype=np.float64)
-        object_ids = np.zeros((0,), dtype=np.int64)
-    else:
-        object_ids = rows[:, 0].astype(np.int64)
-        coords = rows[:, 1:5]  # (t, z, y, x)
-    meta = {
-        "name": f"{path.stem} (detections)",
-        "size": 4,
-        "face_color": "transparent",
-        "border_color": "yellow",
-        "border_width": 0.15,
-        "out_of_slice_display": False,
-        "features": {"object_id": object_ids},
-        "metadata": {"source": str(path), "ascent_layer_kind": "detections"},
+def _read_tracks_csv(path):
+    """
+    Reader for CSV annotations. 
+    Standardizes various column naming conventions into a unified Points layer.
+    """
+    import pandas as pd
+    path = Path(path)
+    
+    # 1. Load the CSV (logic from get_annotation_csv)
+    df = pd.read_csv(path, header=0)
+    
+    # Standardize column names
+    name_map = {
+        "ObjectID": "object_id",
+        "TrackID": "track_id",
+        "t_idx": "t"
     }
-    return (coords, meta, "points")
+    df.rename(columns=name_map, inplace=True)
+    
+    # 2. Ensure essential columns exist
+    # If no track/worldline ID exists, treat every point as its own object
+    if "object_id" not in df.columns:
+        df["object_id"] = np.arange(len(df))
+    # makeTracks = True
+    # if "track_id" not in df.columns:
+    #     df["track_id"] = df["object_id"]
+    #     makeTracks = False
 
+    # Add provenance if missing (logic from get_annotation_csv)
+    # if "provenance" not in df.columns:
+    #     df["provenance"] = "csv"
 
-def _read_tracks_csv(path: Path) -> LayerData:
-    """Read TrackID,ObjectID,t,z,y,x → napari Tracks layer."""
-    raw = _loadtxt_skip_header(path, expected_cols=6)
-    if raw.shape[0] == 0:
-        track_data = np.zeros((0, 5), dtype=np.float64)
-        properties: dict[str, np.ndarray] = {"object_id": np.zeros((0,), dtype=np.int64)}
-    else:
-        # napari Tracks expects (track_id, t, [z,] y, x). Drop ObjectID into properties.
-        track_data = np.column_stack(
-            [raw[:, 0], raw[:, 2], raw[:, 3], raw[:, 4], raw[:, 5]]
-        )
-        properties = {"object_id": raw[:, 1].astype(np.int64)}
-    meta = {
-        "name": f"{path.stem} (tracks)",
-        "tail_length": 30,
-        "head_length": 0,
-        "properties": properties,
-        "metadata": {"source": str(path), "ascent_layer_kind": "tracks"},
+    # 3. Extract coordinates and features (logic from getAscentPointsData)
+    # Expected order: Time, Z, Y, X
+    try:
+        coords = df[["t", "z", "y", "x"]].to_numpy().astype(float)
+    except KeyError:
+        # Fallback for 2D data if 'z' is missing in some CSVs
+        coords = df[["t", "y", "x"]].to_numpy().astype(float)
+
+    features = {key:df[key].to_numpy() for key in df.keys() if key not in ["t","x","y","z"]}
+    #     "track_id": df["track_id"].to_numpy(),
+    #     "object_id": df["object_id"].to_numpy(),
+    #     "provenance": df["provenance"].to_numpy(),
+    # }
+
+    # 4. Define Layer Metadata
+    add_kwargs = {
+        "name": path.stem,
+        "features": features,
+        # "face_color": "track_id", # Color points by track_id
+        # "face_colormap": 'turbo',
+        "size": 5,
+        # "text": "track_id",
+        "metadata": {"source": path,
+                     "reader": "ascent"},
     }
-    return (track_data, meta, "tracks")
+    # if makeTracks:
+    #     print([(coords, add_kwargs, "points"),make_tracks(coords,add_kwargs)])
+    #     return [(coords, add_kwargs, "points"),make_tracks(coords,add_kwargs)]
+    import napari
+    try:
+        viewer = napari.current_viewer()
+        if viewer is not None: 
+            from ._manager import get_or_create_manager
+            get_or_create_manager(viewer)
+    except Exception as e:
+        print(f"Warning: Coult not auto-initialize LayerManager from reader: {e}")
+
+    return [(coords, add_kwargs, "points")]
+
+def make_tracks(coords,args) -> tuple[np.ndarray,dict,str]:
+    data = np.concat([args["features"]['track_id'][:,None],coords],axis=1)
+    add_kwargs = {
+        "name": args["name"] + "_tracks",
+        "features": args["features"],
+        "color_by": "track_id",
+        "colormap": "fire"
+    }
+    return (data,add_kwargs,"tracks")

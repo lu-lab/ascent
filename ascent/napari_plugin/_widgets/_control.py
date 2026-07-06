@@ -16,32 +16,22 @@ _HEADER_MD = (
     "CSV (<code>object_id,t,z,y,x</code>), or a tracks CSV "
     "(<code>TrackID,ObjectID,t,z,y,x</code>) onto the viewer."
 )
+from qtpy.QtWidgets import QWidget, QTabWidget, QVBoxLayout
 
-
-def make_control_widget():
+class ControlWidget(QWidget):
     """Return the ASCENT control panel: header + inference + correction + traces."""
     from magicgui.widgets import Container, Label
-
-    from ascent.napari_plugin._widgets._correction import make_correction_widget
-    from ascent.napari_plugin._widgets._inference import make_inference_widget
-    from ascent.napari_plugin._widgets._traces import make_traces_widget
-
-    container = Container(
-        widgets=[
-            Label(value=_HEADER_MD),
-            make_inference_widget(),
-            make_correction_widget(),
-            make_traces_widget(),
-        ],
-        labels=False,
-        name="ASCENT",
-    )
-    # The HTML header label will stretch the dock to the width of the text
-    # unless we explicitly tell the underlying Qt widget to word-wrap it.
-    try:
-        container[0].native.setWordWrap(True)
-        container.native.setMaximumWidth(350)
-    except Exception:
-        pass
-
-    return container
+    from napari.viewer import Viewer
+    def __init__(self,viewer:Viewer,parent=None):
+        super().__init__(parent)
+        from ascent.napari_plugin._widgets._correction import CorrectionWidget
+        from ascent.napari_plugin._widgets._inference import make_inference_widget
+        from ascent.napari_plugin._widgets._traces import make_traces_widget
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        self.container = QTabWidget()
+        self.container.addTab(make_inference_widget().native,"Inference")
+        self.container.addTab(CorrectionWidget(viewer),"Correction")
+        self.container.addTab(make_traces_widget().native,"Traces")
+        layout.addWidget(self.container)
+        return 

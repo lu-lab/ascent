@@ -14,8 +14,12 @@ contributions:
       python_name: ascent.napari_plugin._reader:get_reader
       title: Open ASCENT HDF5 / detections CSV / tracks CSV
 
+    - id: ascent.write
+      python_name: ascent.napari_plugin._writer:save_csv_tracks
+      title: Save ASCENT Tracks
+
     - id: ascent.control
-      python_name: ascent.napari_plugin._widgets._control:make_control_widget
+      python_name: ascent.napari_plugin._widgets._control:ControlWidget
       title: ASCENT — Control panel
 
     - id: ascent.inference
@@ -23,7 +27,7 @@ contributions:
       title: ASCENT — Inference
 
     - id: ascent.correct
-      python_name: ascent.napari_plugin._widgets._correction:make_correction_widget
+      python_name: ascent.napari_plugin._widgets._correction:CorrectionWidget
       title: ASCENT — Correct tracks
 
     - id: ascent.traces
@@ -37,6 +41,12 @@ contributions:
         - "*.hdf5"
         - "*.csv"
       accepts_directories: false
+  
+  writers:
+    - command: ascent.write
+      layer_types: ["points"]
+      filename_extensions:
+        - ".csv"
 
   widgets:
     - command: ascent.control

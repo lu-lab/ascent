@@ -235,6 +235,8 @@ class ObjectEmbeddingDataset3D(Dataset):
                 if self.image_dim is None:
                     with h5py.File(self.image_file, "r") as f:
                         vol = f[f"t{t}"][f"c{self.image_channel}"][:]
+                        if vol.ndim == 2:
+                            vol = vol[None,...]
                         # re-order axes to Z Y X
                         vol = np.moveaxis(vol, self._axis_permute, (0, 1, 2))
                         self.image_dim = vol.shape
@@ -246,6 +248,8 @@ class ObjectEmbeddingDataset3D(Dataset):
             else:
                 with h5py.File(self.image_file, "r") as f:
                     vol = f[f"t{t}"][f"c{self.image_channel}"][:]
+                    if vol.ndim == 2:
+                        vol = vol[None,...]
                     # re-order axes to Z Y X
                     vol = np.moveaxis(vol, self._axis_permute, (0, 1, 2))
                     # add channel dim

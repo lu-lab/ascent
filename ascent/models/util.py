@@ -93,7 +93,7 @@ def modify_channelvit_input_channels(model, new_in_chans):
             if is_hcs:
                 new_channel_embed.weight = old_channel_embed.weight[:new_in_chans, :]
             else:
-                new_channel_embed = old_channel_embed[:, :, :new_in_chans, :, :]
+                new_channel_embed = nn.Parameter(old_channel_embed[:, :, :new_in_chans, :, :])
 
         # Initialize the new channels with the mean of existing channels
         if new_in_chans > original_in_chans:

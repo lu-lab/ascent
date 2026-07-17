@@ -384,6 +384,14 @@ This decoupling means StarDist's TF dependency does not need to coexist with
 ASCENT's PyTorch stack; the two plugins live in independent environments and
 you get the best of each via napari layer interop.
 
+### Demo Data
+The data needed to test the plugin on the inhouse worm dataset and a portion of a hydra recording from Lagache, et al. can be found in the following dropbox folder: https://www.dropbox.com/scl/fo/7jrb3duabf8ks150gflzn/AFcsPNgepYjSbgN4IG37Qow?rlkey=frpxd9owg184t44oda9e9nrlz&st=vssjwwe8&dl=0
+
+h5 files containing the recordings, csv files with sample segmentations, and pretrained model weights are provided for both datasets.
+
+Lagache, T., Hanson, A., Fairhall, A. & Yuste, R. Robust single neuron tracking of
+calcium imaging in behaving Hydra (2020). URL https://www.biorxiv.org/content/10.
+1101/2020.06.22.165696v1. Pages: 2020.06.22.165696 Section: New Results.
 ### Tips
 
 - The plugin requires a 4-D `(T, Z, Y, X)` Image layer. If your data is
